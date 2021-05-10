@@ -1,0 +1,271 @@
+# ----------------------------------------------------------------------------
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  AWS CloudFormation Template to run performance tests. This template
+  would create a Amazon ECS cluster and run the tests using Fargate instances. 
+  The JMeter Client EC2 instance will be in a public subnet with a public IP. 
+  All other EC2 instances will be in a private subnet.
+  **WARNING** This template creates multiple Amazon AWS resources. You will be
+  billed for the AWS resources used if you create a stack from this template.
+#############################
+# User inputs
+#############################
+Parameters:
+  UserEmail:
+    Type: String
+    Description: Email address of the user creating this stack.
+    AllowedPattern: '[^\s@]+@[^\s@]+\.[^\s@]+'
+    ConstraintDescription: You should enter a valid email.
+    Default: "user@example.com"
+  KeyName:
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance.
+    ConstraintDescription: Must be the name of an existing EC2 KeyPair.
+  LatestAmiId:
+    Type: String
+    Description: Image ID of the EC2 Instance.
+    Default: "ami-077e31c4939f6a2f3"
+  InstanceType:
+    Type: String
+    Description: WebServer EC2 instance type.
+    Default: t2.micro
+    AllowedValues:
+      - t1.micro
+      - t2.nano
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - t2.large
+      - c1.medium
+      - c1.xlarge
+      - c3.large
+      - c3.xlarge
+      - c3.2xlarge
+      - c3.4xlarge
+      - c3.8xlarge
+      - c4.large
+      - c4.xlarge
+      - c4.2xlarge
+      - c4.4xlarge
+      - c4.8xlarge
+      - c5.large
+      - c5.xlarge
+      - c5.2xlarge
+      - c5.4xlarge
+    ConstraintDescription: Must be a valid EC2 instance type.
+################################
+# Create AWS resources
+################################
+Resources:
+  ####################################################################
+  # Create IAM resources
+  ####################################################################
+  EC2ResourceAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: IAMFullAccess 
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+                # To create IAM role
+                - 'iam:*'
+              Resource: '*'
+        - PolicyName: ElasticLoadBalancingFullAccess 
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+                # To create elastic load balancer
+                - 'elasticloadbalancing:*'
+              Resource: '*'
+  EC2InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2ResourceAccessRole
+  ##########################################################################################
+  # Create VPC, public subnet and private subnet
+  ##########################################################################################
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ':'
+            - - 'VPC'
+              - !Ref AWS::StackName
+        - Key: User
+          Value: !Ref UserEmail
+  # Configure Public Subnet
+  PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref 'AWS::Region'
+      CidrBlock: 10.0.0.0/24
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ':'
+            - - 'PublicSubnet'
+              - !Ref AWS::StackName
+        - Key: User
+          Value: !Ref UserEmail
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ':'
+            - - 'InternetGateway'
+              - !Ref AWS::StackName
+        - Key: User
+          Value: !Ref UserEmail
+  AttachGateway:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ':'
+            - - 'PublicRouteTable'
+              - !Ref AWS::StackName
+        - Key: User
+          Value: !Ref UserEmail
+  PublicRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+  # Configure Private Subnet
+  PrivateSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref 'AWS::Region'
+      CidrBlock: 10.0.1.0/24
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ':'
+            - - 'PrivateSubnet'
+              - !Ref AWS::StackName
+        - Key: User
+          Value: !Ref UserEmail
+  NatGateway:
+    Type: 'AWS::EC2::NatGateway'
+    DependsOn: AttachGateway
+    Properties:
+      AllocationId: !GetAtt
+        - NatGatewayIPAddress
+        - AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ':'
+            - - 'NatGateway'
+              - !Ref AWS::StackName
+        - Key: User
+          Value: !Ref UserEmail
+  NatGatewayIPAddress:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+  PrivateRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ':'
+            - - 'PrivateRouteTable'
+              - !Ref AWS::StackName
+        - Key: User
+          Value: !Ref UserEmail
+  PrivateRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  PrivateSubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+  SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Security Group for Fargate tasks
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+  ##########################################################################################
+  # Create EC2 instance
+  ##########################################################################################
+  EC2Instance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ':'
+            - - 'EC2Instance'
+              - !Ref AWS::StackName
+        - Key: User
+          Value: !Ref UserEmail
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref SecurityGroup
+          AssociatePublicIpAddress: 'true'
+          SubnetId: !Ref PublicSubnet
+          DeviceIndex: '0'
+          DeleteOnTermination: 'true'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          # Set custom directory as environment variables
+          export HOME_DIR="/home/ubuntu"
